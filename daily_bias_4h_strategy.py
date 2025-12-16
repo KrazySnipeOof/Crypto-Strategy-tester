@@ -269,8 +269,16 @@ def update_4h_candle(context, row, symbol):
         current_candle['bars'] += 1
 
 
-def calculate_volume_ma(context, symbol, session_name, lookback=10):
-    """Calculate volume moving average for 4H candles."""
+def calculate_volume_ma(context, symbol, session_name, lookback_days=20):
+    """
+    Calculate 20-day moving average for volume on 4H candles.
+    
+    Parameters:
+    -----------
+    lookback_days : int
+        Number of days to look back (default: 20 days)
+        For 4H candles: 20 days * 6 candles/day = 120 candles
+    """
     if symbol not in context['4h_candles']:
         return None
     
@@ -278,15 +286,26 @@ def calculate_volume_ma(context, symbol, session_name, lookback=10):
     if len(candles) < 2:
         return None
     
+    # Convert days to number of 4H candles (6 candles per day)
+    lookback_candles = lookback_days * 6
+    
     # For Asia sessions, compare to recent Asian sessions only
     if session_name in ['asia_open', 'frankfurt']:
-        asia_candles = [c for c in candles[-lookback*2:] if c.get('session') in ['asia_open', 'frankfurt']]
-        if len(asia_candles) >= 3:
-            volumes = [c['volume'] for c in asia_candles[-3:]]
+        # Get more candles to ensure we have enough Asian sessions
+        asia_candles = [c for c in candles[-lookback_candles*2:] if c.get('session') in ['asia_open', 'frankfurt']]
+        if len(asia_candles) >= 20:  # Need at least 20 Asian sessions for 20-day MA
+            # Take last 20 days worth of Asian sessions (approximately 20 sessions)
+            volumes = [c['volume'] for c in asia_candles[-20:]]
+            return np.mean(volumes)
+        elif len(asia_candles) >= 3:
+            # Fallback to available sessions
+            volumes = [c['volume'] for c in asia_candles]
             return np.mean(volumes)
     
-    # General 4H volume MA
-    volumes = [c['volume'] for c in candles[-lookback:]]
+    # General 4H volume MA - use 20 days (120 candles)
+    # Take the last lookback_candles candles for 20-day moving average
+    available_candles = min(lookback_candles, len(candles))
+    volumes = [c['volume'] for c in candles[-available_candles:]]
     return np.mean(volumes) if volumes else None
 
 
