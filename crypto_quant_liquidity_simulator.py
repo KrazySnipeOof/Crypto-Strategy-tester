@@ -1490,14 +1490,35 @@ def main():
     with tab1:
         st.subheader("Single Backtest")
         
-        # Show data source info
+        # Show data source info and welcome message
         if historical_data is not None:
             symbols_used = ", ".join(historical_data['symbol'].unique())
             st.info(f"📊 Using Historical Crypto data ({symbols_used}): {historical_info}")
+            data_loaded = True
         elif csv_data is not None:
             st.info(f"📊 Using CSV data: {csv_info}")
+            data_loaded = True
         else:
             st.info("📊 Using synthetic data")
+            data_loaded = False
+        
+        # Welcome message if no backtest run yet
+        if 'last_stats' not in st.session_state:
+            st.markdown("""
+            ### Welcome to Crypto Quant Liquidity Simulator
+            
+            **Get Started:**
+            1. Select your data source in the sidebar (Historical Crypto Data recommended)
+            2. Configure your account and position parameters
+            3. Load your custom trading strategy (optional)
+            4. Click "Run Backtest" to see results
+            
+            **Features:**
+            - 📊 Backtest on real historical crypto data (BTC, ETH, SOL)
+            - 📈 View Sharpe Ratio, Sortino Ratio, and other performance metrics
+            - 🎲 Run Monte Carlo simulations to test strategy robustness
+            - 📉 Analyze drawdowns and risk metrics
+            """)
 
         # Auto-run if data is loaded and UI overrides are disabled
         auto_run = False
@@ -1633,55 +1654,155 @@ def main():
 
     # ---------- Tab 3 ----------
     with tab3:
-        st.subheader("Monte Carlo: Pass Probability")
-        if csv_data is not None:
-            st.info("ℹ️ Note: Monte Carlo uses synthetic data for multiple simulations. CSV data is used only for Single Backtest.")
-        if st.button("▶️ Run Monte Carlo", use_container_width=True, key="run_mc"):
+        st.subheader("Monte Carlo Simulation with Custom Strategy")
+        
+        # Strategy Import Section
+        st.markdown("### 📈 Import Your Trading Strategy")
+        strategy_import_col1, strategy_import_col2 = st.columns(2)
+        
+        with strategy_import_col1:
+            st.markdown("**Option 1: Upload Strategy File**")
+            uploaded_strategy_file = st.file_uploader(
+                "Upload Python strategy file",
+                type=['py'],
+                help="Upload a .py file with a 'strategy' function"
+            )
+            if uploaded_strategy_file:
+                try:
+                    # Save uploaded file temporarily
+                    temp_strategy_path = f"temp_{uploaded_strategy_file.name}"
+                    with open(temp_strategy_path, "wb") as f:
+                        f.write(uploaded_strategy_file.getbuffer())
+                    mc_custom_strategy = load_strategy_from_file(temp_strategy_path)
+                    st.success(f"✓ Strategy loaded: {uploaded_strategy_file.name}")
+                    if os.path.exists(temp_strategy_path):
+                        os.remove(temp_strategy_path)
+                except Exception as e:
+                    st.error(f"Error loading strategy: {str(e)}")
+                    mc_custom_strategy = None
+            else:
+                mc_custom_strategy = custom_strategy  # Use config strategy if available
+        
+        with strategy_import_col2:
+            st.markdown("**Option 2: Strategy File Path**")
+            mc_strategy_path = st.text_input(
+                "Enter strategy file path",
+                value=CONFIG.get("strategy_file", ""),
+                help="Path to your strategy .py file"
+            )
+            if mc_strategy_path and os.path.exists(mc_strategy_path):
+                try:
+                    mc_custom_strategy = load_strategy_from_file(mc_strategy_path)
+                    st.success(f"✓ Strategy loaded from: {mc_strategy_path}")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+                    mc_custom_strategy = custom_strategy
+            elif not uploaded_strategy_file:
+                mc_custom_strategy = custom_strategy
+        
+        # Data source info
+        if historical_data is not None:
+            st.info(f"📊 Monte Carlo will use Historical Crypto data: {len(historical_data)} trades available")
+            mc_data_source = "historical"
+        elif csv_data is not None:
+            st.info(f"📊 Monte Carlo will use CSV data: {len(csv_data)} trades available")
+            mc_data_source = "csv"
+        else:
+            st.info("📊 Monte Carlo will use synthetic data")
+            mc_data_source = "synthetic"
+        
+        if st.button("▶️ Run Monte Carlo Simulation", use_container_width=True, key="run_mc"):
             progress = st.progress(0)
             pass_count = 0
             results = []
-
-            for i in range(num_simulations):
-                trades = generate_synthetic_trades_multi_with_signals(
-                    num_trades=num_trades,
-                    win_rate=win_rate,
-                    avg_win=avg_win,
-                    avg_loss=avg_loss,
-                    trading_days=trading_days
-                )
-                backtester = EnhancedSignalBacktester(
-                    account_size=account_size,
-                    daily_dd_limit=daily_dd_limit,
-                    max_dd_limit=max_dd_limit,
-                    entry_size=entry_size,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    target_gain=target_gain
-                )
-                s = backtester.run_simulation(trades)
-                if s['passed_account']:
-                    pass_count += 1
-                results.append(s)
-                progress.progress((i + 1) / num_simulations)
+            
+            with st.spinner(f"Running {num_simulations} Monte Carlo simulations..."):
+                for i in range(num_simulations):
+                    # Use actual data if available, otherwise synthetic
+                    if mc_data_source == "historical" and historical_data is not None:
+                        # Sample from historical data
+                        sample_size = min(len(historical_data), num_trades * 2)
+                        trades = historical_data.sample(n=min(sample_size, len(historical_data))).copy()
+                        trades = trades.sort_values('entry_time').reset_index(drop=True)
+                    elif mc_data_source == "csv" and csv_data is not None:
+                        # Sample from CSV data
+                        sample_size = min(len(csv_data), num_trades * 2)
+                        trades = csv_data.sample(n=min(sample_size, len(csv_data))).copy()
+                        trades = trades.sort_values('entry_time').reset_index(drop=True)
+                    else:
+                        # Generate synthetic data
+                        trades = generate_synthetic_trades_multi_with_signals(
+                            num_trades=num_trades,
+                            win_rate=win_rate,
+                            avg_win=avg_win,
+                            avg_loss=avg_loss,
+                            trading_days=trading_days
+                        )
+                    
+                    backtester = EnhancedSignalBacktester(
+                        account_size=account_size,
+                        daily_dd_limit=daily_dd_limit,
+                        max_dd_limit=max_dd_limit,
+                        entry_size=entry_size,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        target_gain=target_gain,
+                        custom_strategy=mc_custom_strategy
+                    )
+                    s = backtester.run_simulation(trades)
+                    if s['passed_account']:
+                        pass_count += 1
+                    results.append(s)
+                    progress.progress((i + 1) / num_simulations)
 
             st.session_state.mc_results = results
             st.session_state.pass_rate = pass_count / num_simulations
+            st.session_state.mc_strategy_used = "Custom" if mc_custom_strategy else "Default"
 
         if 'mc_results' in st.session_state:
             results = st.session_state.mc_results
             pass_rate = st.session_state.pass_rate
+            strategy_name = st.session_state.get('mc_strategy_used', 'Default')
 
+            st.markdown("---")
+            st.markdown(f"### 📊 Monte Carlo Results ({strategy_name} Strategy)")
+            
+            # Key Metrics Row 1: Pass Rate and Risk Metrics
             m1, m2, m3, m4 = st.columns(4)
             with m1:
                 color = "green" if pass_rate >= 0.6 else "orange" if pass_rate >= 0.4 else "red"
                 st.markdown(f"<h3 style='color:{color}'>Pass Rate: {pass_rate*100:.1f}%</h3>", unsafe_allow_html=True)
+                st.caption(f"Out of {num_simulations} simulations")
             with m2:
                 st.metric("Avg Return", f"{np.mean([r['return_pct'] for r in results]):.2f}%")
             with m3:
                 st.metric("Avg Max DD", f"{np.mean([r['max_dd_pct'] for r in results]):.2f}%")
             with m4:
-                st.metric("Avg Sharpe", f"{np.mean([r['sharpe'] for r in results]):.2f}")
+                st.metric("Avg Trades", f"{np.mean([r['num_trades'] for r in results]):.0f}")
+            
+            # Key Metrics Row 2: Sharpe and Sortino (Prominent)
+            st.markdown("### 🎯 Risk-Adjusted Returns")
+            r1, r2, r3, r4 = st.columns(4)
+            with r1:
+                avg_sharpe = np.mean([r['sharpe'] for r in results])
+                sharpe_color = "green" if avg_sharpe > 1.0 else "orange" if avg_sharpe > 0.5 else "red"
+                st.markdown(f"<h2 style='color:{sharpe_color}'>Sharpe Ratio</h2>", unsafe_allow_html=True)
+                st.metric("Average", f"{avg_sharpe:.3f}", 
+                         f"Std: {np.std([r['sharpe'] for r in results]):.3f}")
+            with r2:
+                avg_sortino = np.mean([r['sortino'] for r in results])
+                sortino_color = "green" if avg_sortino > 1.0 else "orange" if avg_sortino > 0.5 else "red"
+                st.markdown(f"<h2 style='color:{sortino_color}'>Sortino Ratio</h2>", unsafe_allow_html=True)
+                st.metric("Average", f"{avg_sortino:.3f}",
+                         f"Std: {np.std([r['sortino'] for r in results]):.3f}")
+            with r3:
+                avg_calmar = np.mean([r['calmar'] for r in results])
+                st.metric("Calmar Ratio", f"{avg_calmar:.3f}")
+            with r4:
+                avg_pf = np.mean([r['profit_factor'] for r in results])
+                st.metric("Profit Factor", f"{avg_pf:.2f}")
 
+            st.markdown("### 📈 Performance Distributions")
             col1, col2 = st.columns(2)
             with col1:
                 rets = [r['return_pct'] for r in results]
@@ -1694,6 +1815,25 @@ def main():
                 fig = px.histogram(dds, nbins=30, title="Max DD Distribution (%)")
                 fig.add_vline(x=max_dd_limit*100, line_dash="dash", line_color="red",
                               annotation_text=f"Limit: {max_dd_limit*100:.1f}%")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            st.markdown("### 🎯 Risk-Adjusted Return Distributions")
+            col3, col4 = st.columns(2)
+            with col3:
+                sharpes = [r['sharpe'] for r in results]
+                fig = px.histogram(sharpes, nbins=30, title="Sharpe Ratio Distribution")
+                fig.add_vline(x=np.mean(sharpes), line_dash="dash", line_color="green",
+                              annotation_text=f"Mean: {np.mean(sharpes):.3f}")
+                fig.add_vline(x=1.0, line_dash="dot", line_color="orange",
+                              annotation_text="Good: >1.0")
+                st.plotly_chart(fig, use_container_width=True)
+            with col4:
+                sortinos = [r['sortino'] for r in results]
+                fig = px.histogram(sortinos, nbins=30, title="Sortino Ratio Distribution")
+                fig.add_vline(x=np.mean(sortinos), line_dash="dash", line_color="green",
+                              annotation_text=f"Mean: {np.mean(sortinos):.3f}")
+                fig.add_vline(x=1.0, line_dash="dot", line_color="orange",
+                              annotation_text="Good: >1.0")
                 st.plotly_chart(fig, use_container_width=True)
 
     # ---------- Tab 4 ----------
