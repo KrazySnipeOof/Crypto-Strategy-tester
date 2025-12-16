@@ -104,6 +104,50 @@ Quant/
 - Google Chrome (for auto-launch)
 - See `requirements.txt` for Python packages
 
+## Deploy to Web (Streamlit Cloud)
+
+### Step 1: Ensure Repository is on GitHub
+Your repository is already on GitHub: https://github.com/KrazySnipeOof/Crypto-Strategy-tester.git
+
+### Step 2: Deploy to Streamlit Cloud
+
+1. **Sign up/Login** to [Streamlit Cloud](https://streamlit.io/cloud)
+   - Use your GitHub account to sign in
+
+2. **Create New App**
+   - Click "New app" button
+   - Select your repository: `KrazySnipeOof/Crypto-Strategy-tester`
+   - Set main file path: `crypto_quant_liquidity_simulator.py`
+   - Click "Deploy"
+
+3. **Your app will be live at**: `https://your-app-name.streamlit.app`
+
+### Alternative: Deploy with Other Services
+
+#### Railway
+1. Sign up at [Railway.app](https://railway.app)
+2. Connect your GitHub repository
+3. Add a `Procfile`:
+   ```
+   web: streamlit run crypto_quant_liquidity_simulator.py --server.port $PORT --server.address 0.0.0.0
+   ```
+4. Deploy!
+
+#### Render
+1. Sign up at [Render.com](https://render.com)
+2. Create new Web Service
+3. Connect GitHub repository
+4. Set:
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `streamlit run crypto_quant_liquidity_simulator.py --server.port $PORT --server.address 0.0.0.0`
+5. Deploy!
+
+### Note on Large Data Files
+The historical data files are very large. For web deployment, consider:
+- Using GitHub LFS for large files
+- Or hosting data separately and loading via API
+- Or using a smaller sample dataset for web deployment
+
 ## Notes
 
 - The app runs on `http://localhost:8501` by default
