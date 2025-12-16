@@ -4,3 +4,4 @@ matplotlib>=3.7.0
 seaborn>=0.12.0
 pytz>=2025.2
 jupyter>=1.0.0
+ipywidgets>=8.0.0
