@@ -21,6 +21,9 @@ import pytz
 # Timezone for session calculations (EST/EDT)
 EST_TZ = pytz.timezone('US/Eastern')
 
+# Timezone for trading window (Chicago)
+CHICAGO_TZ = pytz.timezone('America/Chicago')
+
 # 4H Session Times (EST)
 SESSION_TIMES = {
     'frankfurt': (22, 2),   # 22:00-02:00 EST (Late Asia/Pre-London)
@@ -76,6 +79,28 @@ def initialize_context(context):
     
     if 'candle_sequence' not in context:
         context['candle_sequence'] = {}  # symbol -> current candle sequence info
+    
+    # CISD tracking (5-minute timeframe)
+    if '5m_candles' not in context:
+        context['5m_candles'] = {}  # symbol -> list of completed 5m candles
+    
+    if 'current_5m_candle' not in context:
+        context['current_5m_candle'] = {}  # symbol -> current accumulating 5m candle
+    
+    if 'last_5m_close_time' not in context:
+        context['last_5m_close_time'] = {}  # symbol -> last 5m candle close time
+    
+    if 'cisd_signals' not in context:
+        context['cisd_signals'] = {}  # symbol -> recent CISD signals (bullish/bearish)
+    
+    if 'structure_legs' not in context:
+        context['structure_legs'] = {}  # symbol -> list of structure legs (bullish/bearish swings)
+    
+    if 'bullish_cisd_formed' not in context:
+        context['bullish_cisd_formed'] = {}  # symbol -> bool, bullish CISD signal active
+    
+    if 'bearish_cisd_formed' not in context:
+        context['bearish_cisd_formed'] = {}  # symbol -> bool, bearish CISD signal active
     
     return context
 
@@ -484,10 +509,279 @@ def get_trading_direction_from_bias(bias):
         return 'NEUTRAL'
 
 
+def get_5m_candle_start(timestamp):
+    """Get the start time of the 5-minute candle containing this timestamp."""
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=pytz.UTC)
+    
+    # Round down to nearest 5 minutes
+    minutes = timestamp.minute
+    rounded_minutes = (minutes // 5) * 5
+    
+    candle_start = timestamp.replace(minute=rounded_minutes, second=0, microsecond=0)
+    return candle_start
+
+
+def update_5m_candle(context, row, symbol):
+    """Update or create 5-minute candle for CISD tracking."""
+    entry_time = row['entry_time']
+    if isinstance(entry_time, str):
+        entry_time = pd.to_datetime(entry_time)
+    if entry_time.tzinfo is None:
+        entry_time = entry_time.replace(tzinfo=pytz.UTC)
+    
+    candle_start = get_5m_candle_start(entry_time)
+    
+    # Check if we've moved to a new 5m candle
+    last_close_time = context['last_5m_close_time'].get(symbol)
+    
+    if last_close_time is not None:
+        last_candle_start = get_5m_candle_start(last_close_time)
+        if candle_start != last_candle_start:
+            # Finalize previous 5m candle
+            prev_5m = context['current_5m_candle'][symbol].copy()
+            prev_5m['close_time'] = entry_time
+            
+            # Store in 5m candles list
+            if symbol not in context['5m_candles']:
+                context['5m_candles'][symbol] = []
+            context['5m_candles'][symbol].append(prev_5m)
+            
+            # Keep only last 100 candles for analysis
+            if len(context['5m_candles'][symbol]) > 100:
+                context['5m_candles'][symbol] = context['5m_candles'][symbol][-100:]
+            
+            # Detect CISD on closed 5m candle
+            detect_cisd(context, symbol, prev_5m)
+            
+            # Update last close time
+            context['last_5m_close_time'][symbol] = entry_time
+    
+    # Initialize or update current 5m candle
+    if symbol not in context['current_5m_candle'] or (last_close_time is not None and candle_start != get_5m_candle_start(last_close_time)):
+        context['current_5m_candle'][symbol] = {
+            'start_time': candle_start,
+            'open': row['entry_price'],
+            'high': row.get('high', row['entry_price']),
+            'low': row.get('low', row['entry_price']),
+            'close': row.get('exit_price', row['entry_price']),
+            'volume': row.get('volume', 0),
+            'bars': 1
+        }
+        if last_close_time is None:
+            context['last_5m_close_time'][symbol] = entry_time
+    else:
+        # Update current 5m candle
+        current_5m = context['current_5m_candle'][symbol]
+        current_5m['high'] = max(current_5m['high'], row.get('high', row['entry_price']))
+        current_5m['low'] = min(current_5m['low'], row.get('low', row['entry_price']))
+        current_5m['close'] = row.get('exit_price', row['entry_price'])
+        current_5m['volume'] += row.get('volume', 0)
+        current_5m['bars'] += 1
+
+
+def detect_cisd(context, symbol, closed_5m_candle):
+    """
+    Detect Change in Structure Direction (CISD) on 5-minute timeframe.
+    
+    CISD Rules:
+    - Bullish CISD: Price closes above the open of the most recent bearish leg
+    - Bearish CISD: Price closes below the open of the most recent bullish leg
+    """
+    if symbol not in context['5m_candles']:
+        return
+    
+    candles_5m = context['5m_candles'][symbol]
+    if len(candles_5m) < 3:
+        return
+    
+    current_close = closed_5m_candle['close']
+    current_open = closed_5m_candle['open']
+    
+    # Determine if current candle is bullish or bearish
+    is_bullish = current_close > current_open
+    
+    # Update structure legs (swing detection simplified)
+    # Look for swing highs and lows in recent candles
+    if len(candles_5m) >= 5:
+        # Check for swing high (bearish leg start)
+        recent_candles = candles_5m[-5:]
+        swing_high_idx = None
+        swing_low_idx = None
+        
+        # Find swing high (local maximum)
+        for i in range(1, len(recent_candles) - 1):
+            if recent_candles[i]['high'] > recent_candles[i-1]['high'] and \
+               recent_candles[i]['high'] > recent_candles[i+1]['high']:
+                swing_high_idx = len(candles_5m) - len(recent_candles) + i
+                break
+        
+        # Find swing low (local minimum)
+        for i in range(1, len(recent_candles) - 1):
+            if recent_candles[i]['low'] < recent_candles[i-1]['low'] and \
+               recent_candles[i]['low'] < recent_candles[i+1]['low']:
+                swing_low_idx = len(candles_5m) - len(recent_candles) + i
+                break
+        
+        # Track structure legs
+        if symbol not in context['structure_legs']:
+            context['structure_legs'][symbol] = []
+        
+        # Add bearish leg if swing high found
+        if swing_high_idx is not None:
+            swing_candle = candles_5m[swing_high_idx]
+            # Check if this is a new bearish leg
+            if not context['structure_legs'][symbol] or \
+               context['structure_legs'][symbol][-1]['type'] != 'bearish':
+                context['structure_legs'][symbol].append({
+                    'type': 'bearish',
+                    'open': swing_candle['open'],
+                    'high': swing_candle['high'],
+                    'time': swing_candle.get('start_time', swing_candle.get('close_time'))
+                })
+                # Keep only last 5 legs
+                if len(context['structure_legs'][symbol]) > 5:
+                    context['structure_legs'][symbol] = context['structure_legs'][symbol][-5:]
+        
+        # Add bullish leg if swing low found
+        if swing_low_idx is not None:
+            swing_candle = candles_5m[swing_low_idx]
+            # Check if this is a new bullish leg
+            if not context['structure_legs'][symbol] or \
+               context['structure_legs'][symbol][-1]['type'] != 'bullish':
+                context['structure_legs'][symbol].append({
+                    'type': 'bullish',
+                    'open': swing_candle['open'],
+                    'low': swing_candle['low'],
+                    'time': swing_candle.get('start_time', swing_candle.get('close_time'))
+                })
+                # Keep only last 5 legs
+                if len(context['structure_legs'][symbol]) > 5:
+                    context['structure_legs'][symbol] = context['structure_legs'][symbol][-5:]
+    
+    # Detect CISD
+    legs = context['structure_legs'].get(symbol, [])
+    
+    if legs:
+        last_leg = legs[-1]
+        
+        # Bullish CISD: Price closes above the open of the most recent bearish leg
+        if last_leg['type'] == 'bearish':
+            bearish_leg_open = last_leg['open']
+            if current_close > bearish_leg_open:
+                context['bullish_cisd_formed'][symbol] = True
+                # Store signal with timestamp
+                if symbol not in context['cisd_signals']:
+                    context['cisd_signals'][symbol] = []
+                context['cisd_signals'][symbol].append({
+                    'type': 'bullish',
+                    'time': closed_5m_candle.get('close_time', closed_5m_candle.get('start_time')),
+                    'price': current_close,
+                    'trigger_level': bearish_leg_open
+                })
+                # Keep only last 10 signals
+                if len(context['cisd_signals'][symbol]) > 10:
+                    context['cisd_signals'][symbol] = context['cisd_signals'][symbol][-10:]
+        
+        # Bearish CISD: Price closes below the open of the most recent bullish leg
+        elif last_leg['type'] == 'bullish':
+            bullish_leg_open = last_leg['open']
+            if current_close < bullish_leg_open:
+                context['bearish_cisd_formed'][symbol] = True
+                # Store signal with timestamp
+                if symbol not in context['cisd_signals']:
+                    context['cisd_signals'][symbol] = []
+                context['cisd_signals'][symbol].append({
+                    'type': 'bearish',
+                    'time': closed_5m_candle.get('close_time', closed_5m_candle.get('start_time')),
+                    'price': current_close,
+                    'trigger_level': bullish_leg_open
+                })
+                # Keep only last 10 signals
+                if len(context['cisd_signals'][symbol]) > 10:
+                    context['cisd_signals'][symbol] = context['cisd_signals'][symbol][-10:]
+
+
+def is_within_4h_candle_window(entry_time, session_name):
+    """
+    Check if entry_time is within the active 4H candle window.
+    For CISD entries, we focus on the 6am-10am NY Open candle.
+    """
+    if session_name != 'ny_open':
+        return False
+    
+    # Check if we're within the 6am-10am EST window (which is the NY Open 4H candle)
+    if entry_time.tzinfo is None:
+        entry_time = entry_time.replace(tzinfo=pytz.UTC)
+    
+    est_time = entry_time.astimezone(EST_TZ)
+    hour = est_time.hour
+    
+    # 6am-10am EST window
+    return 6 <= hour < 10
+
+
+def is_valid_trading_time(entry_time):
+    """
+    Check if entry_time is within valid trading window.
+    
+    Valid trading hours: 7:30 AM to 11:30 AM Chicago time, Monday through Saturday.
+    
+    Returns: True if valid, False otherwise
+    """
+    if isinstance(entry_time, str):
+        entry_time = pd.to_datetime(entry_time)
+    if entry_time.tzinfo is None:
+        entry_time = entry_time.replace(tzinfo=pytz.UTC)
+    
+    # Convert to Chicago timezone
+    chicago_time = entry_time.astimezone(CHICAGO_TZ)
+    
+    # Check day of week: Monday=0, Sunday=6
+    weekday = chicago_time.weekday()
+    
+    # Only allow Monday through Saturday (0-5), exclude Sunday (6)
+    if weekday >= 6:  # Sunday
+        return False
+    
+    # Check time: 7:30 AM to 11:30 AM Chicago time
+    hour = chicago_time.hour
+    minute = chicago_time.minute
+    
+    # Convert to minutes since midnight for easier comparison
+    time_minutes = hour * 60 + minute
+    start_minutes = 7 * 60 + 30  # 7:30 AM
+    end_minutes = 11 * 60 + 30    # 11:30 AM
+    
+    return start_minutes <= time_minutes <= end_minutes
+
+
 def strategy(row, context=None):
     """
     Main strategy function implementing 4H Session Reversal Strategy with candle-by-candle breakdown.
+    
+    Trading Window: 7:30 AM to 11:30 AM Chicago time, Monday through Saturday.
+    
+    Entry Criteria:
+    1. CISD (Change in Structure Direction) - Multi-timeframe confirmation:
+       - 4H Chart: Session-profile model defines bias and marks 4H candle high/low
+       - 5M Chart: CISD signals must occur within the active 4H candle (6am-10am NY Open)
+       - Entry Rule: 
+         * Bullish CISD + Bullish 4H bias → LONG entry
+         * Bearish CISD + Bearish 4H bias → SHORT entry
+       - CISD Definition:
+         * Bullish CISD: Price closes above the open of the most recent bearish leg
+         * Bearish CISD: Price closes below the open of the most recent bullish leg
+    
+    2. Traditional 4H Session Reversal patterns (fallback if no CISD):
+       - Asia Reversal, London Reversal, NY 6am/10am reversals
+       - Based on PCH/PCL interactions with volume confirmation
     """
+    # Check if within valid trading window
+    entry_time = row['entry_time']
+    if not is_valid_trading_time(entry_time):
+        return 'HOLD', 0.5
+    
     # Initialize context
     context = initialize_context(context)
     
@@ -497,8 +791,10 @@ def strategy(row, context=None):
     # Update 4H candle tracking
     update_4h_candle(context, row, symbol)
     
+    # Update 5-minute candle tracking for CISD detection
+    update_5m_candle(context, row, symbol)
+    
     # Get current session
-    entry_time = row['entry_time']
     if isinstance(entry_time, str):
         entry_time = pd.to_datetime(entry_time)
     if entry_time.tzinfo is None:
@@ -509,6 +805,66 @@ def strategy(row, context=None):
     # Get current session bias
     current_bias = context['session_bias'].get(symbol, 'NEUTRAL')
     trading_direction = get_trading_direction_from_bias(current_bias)
+    
+    # CISD Entry Logic (Multi-timeframe confirmation)
+    # Check if we're in the 6am-10am 4H candle window and have CISD signals
+    if is_within_4h_candle_window(entry_time, session_name):
+        # Check for recent CISD signals (within last 5 minutes of current time)
+        recent_cisd_signals = []
+        if symbol in context['cisd_signals']:
+            for signal in context['cisd_signals'][symbol]:
+                signal_time = signal['time']
+                if isinstance(signal_time, str):
+                    signal_time = pd.to_datetime(signal_time)
+                if signal_time.tzinfo is None:
+                    signal_time = signal_time.replace(tzinfo=pytz.UTC)
+                
+                # Check if signal is recent (within last 30 minutes)
+                time_diff = (entry_time - signal_time).total_seconds() / 60
+                if time_diff <= 30:  # Within last 30 minutes
+                    recent_cisd_signals.append(signal)
+        
+        # Bullish CISD Entry: 4H bias is bullish AND bullish CISD formed
+        if trading_direction == 'BULLISH':
+            bullish_cisd = context['bullish_cisd_formed'].get(symbol, False)
+            # Check if we have a recent bullish CISD signal
+            has_recent_bullish_cisd = any(s['type'] == 'bullish' for s in recent_cisd_signals)
+            
+            if bullish_cisd or has_recent_bullish_cisd:
+                # Additional confirmation: Check if price is near or above CISD trigger level
+                current_price = row['entry_price']
+                if recent_cisd_signals:
+                    latest_bullish = next((s for s in reversed(recent_cisd_signals) if s['type'] == 'bullish'), None)
+                    if latest_bullish:
+                        trigger_level = latest_bullish['trigger_level']
+                        # Entry if price is at or above trigger level (or within 0.1%)
+                        if current_price >= trigger_level * 0.999:
+                            # High confidence entry based on CISD + 4H bias alignment
+                            return 'BUY', 0.9
+                else:
+                    # If no recent signals but flag is set, still allow entry
+                    return 'BUY', 0.85
+        
+        # Bearish CISD Entry: 4H bias is bearish AND bearish CISD formed
+        elif trading_direction == 'BEARISH':
+            bearish_cisd = context['bearish_cisd_formed'].get(symbol, False)
+            # Check if we have a recent bearish CISD signal
+            has_recent_bearish_cisd = any(s['type'] == 'bearish' for s in recent_cisd_signals)
+            
+            if bearish_cisd or has_recent_bearish_cisd:
+                # Additional confirmation: Check if price is near or below CISD trigger level
+                current_price = row['entry_price']
+                if recent_cisd_signals:
+                    latest_bearish = next((s for s in reversed(recent_cisd_signals) if s['type'] == 'bearish'), None)
+                    if latest_bearish:
+                        trigger_level = latest_bearish['trigger_level']
+                        # Entry if price is at or below trigger level (or within 0.1%)
+                        if current_price <= trigger_level * 1.001:
+                            # High confidence entry based on CISD + 4H bias alignment
+                            return 'SELL', 0.9
+                else:
+                    # If no recent signals but flag is set, still allow entry
+                    return 'SELL', 0.85
     
     # If we don't have enough data yet, hold
     if symbol not in context['previous_4h_candle']:
