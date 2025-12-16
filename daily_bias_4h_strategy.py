@@ -725,7 +725,7 @@ def is_valid_trading_time(entry_time):
     """
     Check if entry_time is within valid trading window.
     
-    Valid trading hours: 7:30 AM to 11:30 AM Chicago time, Monday through Saturday.
+    Valid trading hours: 7:00 AM to 11:30 AM Chicago time, Monday through Saturday.
     
     Returns: True if valid, False otherwise
     """
@@ -744,13 +744,13 @@ def is_valid_trading_time(entry_time):
     if weekday >= 6:  # Sunday
         return False
     
-    # Check time: 7:30 AM to 11:30 AM Chicago time
+    # Check time: 7:00 AM to 11:30 AM Chicago time
     hour = chicago_time.hour
     minute = chicago_time.minute
     
     # Convert to minutes since midnight for easier comparison
     time_minutes = hour * 60 + minute
-    start_minutes = 7 * 60 + 30  # 7:30 AM
+    start_minutes = 7 * 60 + 0   # 7:00 AM
     end_minutes = 11 * 60 + 30    # 11:30 AM
     
     return start_minutes <= time_minutes <= end_minutes
@@ -760,7 +760,7 @@ def strategy(row, context=None):
     """
     Main strategy function implementing 4H Session Reversal Strategy with candle-by-candle breakdown.
     
-    Trading Window: 7:30 AM to 11:30 AM Chicago time, Monday through Saturday.
+    Trading Window: 7:00 AM to 11:30 AM Chicago time, Monday through Saturday.
     
     Entry Criteria:
     1. CISD (Change in Structure Direction) - Multi-timeframe confirmation:
