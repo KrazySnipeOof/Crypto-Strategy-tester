@@ -269,15 +269,24 @@ def update_4h_candle(context, row, symbol):
         current_candle['bars'] += 1
 
 
-def calculate_volume_ma(context, symbol, session_name, lookback_days=20):
+def calculate_volume_ma(context, symbol, session_name, lookback=20):
     """
-    Calculate 20-day moving average for volume on 4H candles.
+    Calculate Average Volume (SMA) over lookback period for RVOL calculation.
     
     Parameters:
     -----------
-    lookback_days : int
-        Number of days to look back (default: 20 days)
-        For 4H candles: 20 days * 6 candles/day = 120 candles
+    context : dict
+        Strategy context
+    symbol : str
+        Trading symbol
+    session_name : str
+        Current session name
+    lookback : int
+        Number of bars for volume average (default: 20, can use 30)
+        
+    Returns:
+    --------
+    float or None: Average volume over lookback period
     """
     if symbol not in context['4h_candles']:
         return None
@@ -286,27 +295,71 @@ def calculate_volume_ma(context, symbol, session_name, lookback_days=20):
     if len(candles) < 2:
         return None
     
-    # Convert days to number of 4H candles (6 candles per day)
-    lookback_candles = lookback_days * 6
-    
     # For Asia sessions, compare to recent Asian sessions only
     if session_name in ['asia_open', 'frankfurt']:
-        # Get more candles to ensure we have enough Asian sessions
-        asia_candles = [c for c in candles[-lookback_candles*2:] if c.get('session') in ['asia_open', 'frankfurt']]
-        if len(asia_candles) >= 20:  # Need at least 20 Asian sessions for 20-day MA
-            # Take last 20 days worth of Asian sessions (approximately 20 sessions)
-            volumes = [c['volume'] for c in asia_candles[-20:]]
-            return np.mean(volumes)
-        elif len(asia_candles) >= 3:
-            # Fallback to available sessions
-            volumes = [c['volume'] for c in asia_candles]
-            return np.mean(volumes)
+        asia_candles = [c for c in candles[-lookback*2:] if c.get('session') in ['asia_open', 'frankfurt']]
+        if len(asia_candles) >= 3:
+            volumes = [c['volume'] for c in asia_candles[-min(lookback, len(asia_candles)):]]
+            return np.mean(volumes) if volumes else None
     
-    # General 4H volume MA - use 20 days (120 candles)
-    # Take the last lookback_candles candles for 20-day moving average
-    available_candles = min(lookback_candles, len(candles))
-    volumes = [c['volume'] for c in candles[-available_candles:]]
+    # General 4H volume MA - use last N bars (20 or 30)
+    volumes = [c['volume'] for c in candles[-min(lookback, len(candles)):]]
     return np.mean(volumes) if volumes else None
+
+
+def calculate_rvol(current_volume, average_volume):
+    """
+    Calculate Relative Volume (RVOL).
+    
+    RVOL = Current bar volume / Average volume (N bars)
+    
+    Parameters:
+    -----------
+    current_volume : float
+        Current bar volume
+    average_volume : float
+        Average volume over lookback period
+        
+    Returns:
+    --------
+    float: RVOL value (1.0 = average, >1.0 = above average, <1.0 = below average)
+    """
+    if average_volume is None or average_volume == 0:
+        return 1.0  # Default to average if no baseline
+    
+    return current_volume / average_volume
+
+
+def classify_volume(rvol):
+    """
+    Classify volume based on RVOL thresholds.
+    
+    Thresholds:
+    - Ultra-High Volume (Climax): RVOL ≥ 3.0
+    - High Volume: 1.5 ≤ RVOL < 3.0
+    - Normal/Average Volume: 0.75 ≤ RVOL < 1.5
+    - Low Volume: 0.4 ≤ RVOL < 0.75
+    - Ultra-Low Volume: RVOL < 0.4
+    
+    Parameters:
+    -----------
+    rvol : float
+        Relative Volume value
+        
+    Returns:
+    --------
+    tuple: (volume_category, is_high_volume, is_ultra_high_volume, is_low_volume, is_ultra_low_volume)
+    """
+    if rvol >= 3.0:
+        return ('ULTRA_HIGH', True, True, False, False)
+    elif rvol >= 1.5:
+        return ('HIGH', True, False, False, False)
+    elif rvol >= 0.75:
+        return ('NORMAL', False, False, False, False)
+    elif rvol >= 0.4:
+        return ('LOW', False, False, True, False)
+    else:
+        return ('ULTRA_LOW', False, False, False, True)
 
 
 def calculate_candle_bias(context, symbol, completed_candle):
@@ -333,22 +386,36 @@ def calculate_candle_bias(context, symbol, completed_candle):
     group_name = seq_info.get('group')
     candle_num = seq_info.get('candle_number')
     
-    # Calculate volume MA
-    volume_ma = calculate_volume_ma(context, symbol, session_name)
+    # Calculate Average Volume (SMA over lookback period)
+    # Use 20 bars for 4H timeframe (can be adjusted to 30)
+    volume_lookback = 20
+    volume_ma = calculate_volume_ma(context, symbol, session_name, lookback=volume_lookback)
     if volume_ma is None or volume_ma == 0:
         volume_ma = current_volume
     
-    volume_ratio = current_volume / volume_ma if volume_ma > 0 else 1.0
+    # Calculate RVOL (Relative Volume)
+    rvol = calculate_rvol(current_volume, volume_ma)
     
-    # Session-specific volume thresholds
-    if session_name in ['asia_open', 'frankfurt']:
-        is_high_volume = volume_ratio >= 1.3
-        is_ultra_high_volume = volume_ratio >= 1.8
-        is_low_volume = volume_ratio <= 0.8
-    else:
-        is_high_volume = volume_ratio >= 1.5
-        is_ultra_high_volume = volume_ratio >= 2.0
-        is_low_volume = volume_ratio <= 0.7
+    # Classify volume using RVOL thresholds
+    volume_category, is_high_volume, is_ultra_high_volume, is_low_volume, is_ultra_low_volume = classify_volume(rvol)
+    
+    # Store RVOL and volume classification in context for reference
+    if 'volume_analysis' not in context:
+        context['volume_analysis'] = {}
+    if symbol not in context['volume_analysis']:
+        context['volume_analysis'][symbol] = []
+    
+    context['volume_analysis'][symbol].append({
+        'time': completed_candle.get('close_time', completed_candle.get('start_time')),
+        'session': session_name,
+        'volume': current_volume,
+        'volume_ma': volume_ma,
+        'rvol': rvol,
+        'category': volume_category
+    })
+    # Keep only last 50 volume analyses
+    if len(context['volume_analysis'][symbol]) > 50:
+        context['volume_analysis'][symbol] = context['volume_analysis'][symbol][-50:]
     
     # Price action analysis
     price_change = current_close - current_open
@@ -1038,15 +1105,11 @@ def strategy(row, context=None):
     if volume_ma is None or volume_ma == 0:
         volume_ma = volume
     
-    volume_ratio = volume / volume_ma if volume_ma > 0 else 1.0
+    # Calculate RVOL (Relative Volume) using standardized thresholds
+    rvol = calculate_rvol(volume, volume_ma)
     
-    # Session-specific volume thresholds
-    if session_name in ['asia_open', 'frankfurt']:
-        is_high_volume = volume_ratio >= 1.3
-        is_ultra_high_volume = volume_ratio >= 1.8
-    else:
-        is_high_volume = volume_ratio >= 1.5
-        is_ultra_high_volume = volume_ratio >= 2.0
+    # Classify volume using RVOL thresholds (standardized across all sessions)
+    volume_category, is_high_volume, is_ultra_high_volume, is_low_volume, is_ultra_low_volume = classify_volume(rvol)
     
     # Apply candle-by-candle entry logic
     
