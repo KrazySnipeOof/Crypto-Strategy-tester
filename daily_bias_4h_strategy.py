@@ -99,6 +99,9 @@ def initialize_context(context):
     if 'bullish_cisd_formed' not in context:
         context['bullish_cisd_formed'] = {}  # symbol -> bool, bullish CISD signal active
     
+    if 'volume_analysis' not in context:
+        context['volume_analysis'] = {}  # symbol -> list of volume analyses with RVOL
+    
     if 'bearish_cisd_formed' not in context:
         context['bearish_cisd_formed'] = {}  # symbol -> bool, bearish CISD signal active
     
