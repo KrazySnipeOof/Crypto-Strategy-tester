@@ -582,124 +582,239 @@ def update_5m_candle(context, row, symbol):
 
 def detect_cisd(context, symbol, closed_5m_candle):
     """
-    Detect Change in Structure Direction (CISD) on 5-minute timeframe.
+    Detect CISD (Cumulative Imbalance Supply/Demand) using TradingView PineScript logic.
     
-    CISD Rules:
-    - Bullish CISD: Price closes above the open of the most recent bearish leg
-    - Bearish CISD: Price closes below the open of the most recent bullish leg
+    This implements the exact logic from the TradingView PineScript indicator:
+    - Tracks market structure (topPrice, bottomPrice, isBullish)
+    - Detects bullish/bearish pullbacks
+    - Creates CISD levels when structure breaks
+    - Signals "Bullish CISD Formed" when price closes above bearish CISD level
+    - Signals "Bearish CISD Formed" when price closes below bullish CISD level
     """
-    if symbol not in context['5m_candles']:
-        return
+    # Initialize CISD tracking structures
+    if 'cisd_market_structure' not in context:
+        context['cisd_market_structure'] = {}
+    if 'cisd_pullback_state' not in context:
+        context['cisd_pullback_state'] = {}
+    if 'cisd_levels_bu' not in context:
+        context['cisd_levels_bu'] = {}  # Bullish CISD levels
+    if 'cisd_levels_be' not in context:
+        context['cisd_levels_be'] = {}  # Bearish CISD levels
     
-    candles_5m = context['5m_candles'][symbol]
-    if len(candles_5m) < 3:
-        return
+    # Initialize for this symbol
+    if symbol not in context['cisd_market_structure']:
+        context['cisd_market_structure'][symbol] = {
+            'top_price': 0.0,
+            'bottom_price': 0.0,
+            'is_bullish': False
+        }
     
-    current_close = closed_5m_candle['close']
+    if symbol not in context['cisd_pullback_state']:
+        context['cisd_pullback_state'][symbol] = {
+            'is_bullish_pullback': False,
+            'is_bearish_pullback': False,
+            'potential_top_price': None,
+            'potential_bottom_price': None,
+            'bullish_break_index': None,
+            'bearish_break_index': None
+        }
+    
+    if symbol not in context['cisd_levels_bu']:
+        context['cisd_levels_bu'][symbol] = []  # List of bullish CISD levels
+    if symbol not in context['cisd_levels_be']:
+        context['cisd_levels_be'][symbol] = []  # List of bearish CISD levels
+    
+    # Get current candle data
     current_open = closed_5m_candle['open']
+    current_high = closed_5m_candle['high']
+    current_low = closed_5m_candle['low']
+    current_close = closed_5m_candle['close']
+    current_time = closed_5m_candle.get('close_time', closed_5m_candle.get('start_time'))
     
-    # Determine if current candle is bullish or bearish
-    is_bullish = current_close > current_open
+    # Get previous candle for pullback detection
+    candles_5m = context.get('5m_candles', {}).get(symbol, [])
+    prev_close = candles_5m[-2]['close'] if len(candles_5m) >= 2 else current_close
+    prev_open = candles_5m[-2]['open'] if len(candles_5m) >= 2 else current_open
     
-    # Update structure legs (swing detection simplified)
-    # Look for swing highs and lows in recent candles
-    if len(candles_5m) >= 5:
-        # Check for swing high (bearish leg start)
-        recent_candles = candles_5m[-5:]
-        swing_high_idx = None
-        swing_low_idx = None
-        
-        # Find swing high (local maximum)
-        for i in range(1, len(recent_candles) - 1):
-            if recent_candles[i]['high'] > recent_candles[i-1]['high'] and \
-               recent_candles[i]['high'] > recent_candles[i+1]['high']:
-                swing_high_idx = len(candles_5m) - len(recent_candles) + i
-                break
-        
-        # Find swing low (local minimum)
-        for i in range(1, len(recent_candles) - 1):
-            if recent_candles[i]['low'] < recent_candles[i-1]['low'] and \
-               recent_candles[i]['low'] < recent_candles[i+1]['low']:
-                swing_low_idx = len(candles_5m) - len(recent_candles) + i
-                break
-        
-        # Track structure legs
-        if symbol not in context['structure_legs']:
-            context['structure_legs'][symbol] = []
-        
-        # Add bearish leg if swing high found
-        if swing_high_idx is not None:
-            swing_candle = candles_5m[swing_high_idx]
-            # Check if this is a new bearish leg
-            if not context['structure_legs'][symbol] or \
-               context['structure_legs'][symbol][-1]['type'] != 'bearish':
-                context['structure_legs'][symbol].append({
-                    'type': 'bearish',
-                    'open': swing_candle['open'],
-                    'high': swing_candle['high'],
-                    'time': swing_candle.get('start_time', swing_candle.get('close_time'))
-                })
-                # Keep only last 5 legs
-                if len(context['structure_legs'][symbol]) > 5:
-                    context['structure_legs'][symbol] = context['structure_legs'][symbol][-5:]
-        
-        # Add bullish leg if swing low found
-        if swing_low_idx is not None:
-            swing_candle = candles_5m[swing_low_idx]
-            # Check if this is a new bullish leg
-            if not context['structure_legs'][symbol] or \
-               context['structure_legs'][symbol][-1]['type'] != 'bullish':
-                context['structure_legs'][symbol].append({
-                    'type': 'bullish',
-                    'open': swing_candle['open'],
-                    'low': swing_candle['low'],
-                    'time': swing_candle.get('start_time', swing_candle.get('close_time'))
-                })
-                # Keep only last 5 legs
-                if len(context['structure_legs'][symbol]) > 5:
-                    context['structure_legs'][symbol] = context['structure_legs'][symbol][-5:]
+    # Get current state
+    structure = context['cisd_market_structure'][symbol]
+    pullback = context['cisd_pullback_state'][symbol]
     
-    # Detect CISD
-    legs = context['structure_legs'].get(symbol, [])
+    # Pullback Detection (from PineScript)
+    bearish_pullback_detected = prev_close > prev_open  # Previous candle was bullish
+    bullish_pullback_detected = prev_close < prev_open  # Previous candle was bearish
     
-    if legs:
-        last_leg = legs[-1]
+    # Bearish Pullback Logic
+    if bearish_pullback_detected and not pullback['is_bearish_pullback']:
+        pullback['is_bearish_pullback'] = True
+        pullback['potential_top_price'] = prev_open
+        pullback['bullish_break_index'] = len(candles_5m) - 2  # Index of previous candle
+    
+    # Bullish Pullback Logic
+    if bullish_pullback_detected and not pullback['is_bullish_pullback']:
+        pullback['is_bullish_pullback'] = True
+        pullback['potential_bottom_price'] = prev_open
+        pullback['bearish_break_index'] = len(candles_5m) - 2  # Index of previous candle
+    
+    # Update Potential Levels During Pullbacks
+    if pullback['is_bullish_pullback']:
+        if current_open < (pullback['potential_bottom_price'] or float('inf')):
+            pullback['potential_bottom_price'] = current_open
+            pullback['bearish_break_index'] = len(candles_5m) - 1
+        if (current_close < current_open) and (current_open > (pullback['potential_bottom_price'] or 0)):
+            pullback['potential_bottom_price'] = current_open
+            pullback['bearish_break_index'] = len(candles_5m) - 1
+    
+    if pullback['is_bearish_pullback']:
+        if current_open > (pullback['potential_top_price'] or 0):
+            pullback['potential_top_price'] = current_open
+            pullback['bullish_break_index'] = len(candles_5m) - 1
+        if (current_close > current_open) and current_open < (pullback['potential_top_price'] or float('inf')):
+            pullback['potential_top_price'] = current_open
+            pullback['bullish_break_index'] = len(candles_5m) - 1
+    
+    # Structure Updates - Bearish Break (low < currentStructure.bottomPrice)
+    if current_low < structure['bottom_price'] or structure['bottom_price'] == 0:
+        structure['bottom_price'] = current_low
+        structure['is_bullish'] = False
         
-        # Bullish CISD: Price closes above the open of the most recent bearish leg
-        if last_leg['type'] == 'bearish':
-            bearish_leg_open = last_leg['open']
-            if current_close > bearish_leg_open:
+        # Create bearish CISD level (+CISD)
+        if pullback['is_bearish_pullback'] and pullback['bullish_break_index'] is not None and \
+           pullback['bullish_break_index'] != len(candles_5m) - 1:
+            if pullback['potential_top_price'] is not None:
+                # Create bearish CISD level
+                cisd_level = {
+                    'price': pullback['potential_top_price'],
+                    'created_time': current_time,
+                    'completed': False
+                }
+                context['cisd_levels_be'][symbol].append(cisd_level)
+                # Keep only last level if not keeping old levels
+                if len(context['cisd_levels_be'][symbol]) > 1:
+                    context['cisd_levels_be'][symbol] = context['cisd_levels_be'][symbol][-1:]
+                pullback['is_bearish_pullback'] = False
+        elif prev_close > prev_open and current_close < current_open:
+            # Alternative condition: previous was bullish, current is bearish
+            structure['top_price'] = candles_5m[-2]['high'] if len(candles_5m) >= 2 else current_high
+            if prev_open is not None:
+                cisd_level = {
+                    'price': prev_open,
+                    'created_time': current_time,
+                    'completed': False
+                }
+                context['cisd_levels_be'][symbol].append(cisd_level)
+                if len(context['cisd_levels_be'][symbol]) > 1:
+                    context['cisd_levels_be'][symbol] = context['cisd_levels_be'][symbol][-1:]
+            pullback['is_bearish_pullback'] = False
+    
+    # Structure Updates - Bullish Break (high > currentStructure.topPrice)
+    if current_high > structure['top_price'] or structure['top_price'] == 0:
+        structure['is_bullish'] = True
+        structure['top_price'] = current_high
+        
+        # Create bullish CISD level (-CISD)
+        if pullback['is_bullish_pullback'] and pullback['bearish_break_index'] is not None and \
+           pullback['bearish_break_index'] != len(candles_5m) - 1:
+            if pullback['potential_bottom_price'] is not None:
+                # Create bullish CISD level
+                cisd_level = {
+                    'price': pullback['potential_bottom_price'],
+                    'created_time': current_time,
+                    'completed': False
+                }
+                context['cisd_levels_bu'][symbol].append(cisd_level)
+                # Keep only last level if not keeping old levels
+                if len(context['cisd_levels_bu'][symbol]) > 1:
+                    context['cisd_levels_bu'][symbol] = context['cisd_levels_bu'][symbol][-1:]
+                pullback['is_bullish_pullback'] = False
+        elif prev_close < prev_open and current_close > current_open:
+            # Alternative condition: previous was bearish, current is bullish
+            structure['bottom_price'] = candles_5m[-2]['low'] if len(candles_5m) >= 2 else current_low
+            if prev_open is not None:
+                cisd_level = {
+                    'price': prev_open,
+                    'created_time': current_time,
+                    'completed': False
+                }
+                context['cisd_levels_bu'][symbol].append(cisd_level)
+                if len(context['cisd_levels_bu'][symbol]) > 1:
+                    context['cisd_levels_bu'][symbol] = context['cisd_levels_bu'][symbol][-1:]
+            pullback['is_bullish_pullback'] = False
+    
+    # Check for CISD completion and signal generation
+    # Bullish CISD Formed: Price closes above bearish CISD level
+    if len(context['cisd_levels_bu'][symbol]) >= 1:
+        latest_bu = context['cisd_levels_bu'][symbol][-1]
+        if not latest_bu['completed']:
+            if current_close < latest_bu['price']:
+                # Price is below level, extend level
+                pass
+            elif current_close >= latest_bu['price'] and not latest_bu['completed']:
+                # Bullish CISD Formed!
+                latest_bu['completed'] = True
                 context['bullish_cisd_formed'][symbol] = True
-                # Store signal with timestamp
+                
+                # Store signal
                 if symbol not in context['cisd_signals']:
                     context['cisd_signals'][symbol] = []
                 context['cisd_signals'][symbol].append({
                     'type': 'bullish',
-                    'time': closed_5m_candle.get('close_time', closed_5m_candle.get('start_time')),
+                    'time': current_time,
                     'price': current_close,
-                    'trigger_level': bearish_leg_open
+                    'trigger_level': latest_bu['price'],
+                    'signal': 'Bullish CISD Formed'
                 })
                 # Keep only last 10 signals
                 if len(context['cisd_signals'][symbol]) > 10:
                     context['cisd_signals'][symbol] = context['cisd_signals'][symbol][-10:]
-        
-        # Bearish CISD: Price closes below the open of the most recent bullish leg
-        elif last_leg['type'] == 'bullish':
-            bullish_leg_open = last_leg['open']
-            if current_close < bullish_leg_open:
+                
+                # Create new bearish CISD level when bullish completes
+                if pullback['potential_top_price'] is not None:
+                    new_level = {
+                        'price': pullback['potential_top_price'],
+                        'created_time': current_time,
+                        'completed': False
+                    }
+                    context['cisd_levels_be'][symbol].append(new_level)
+                    if len(context['cisd_levels_be'][symbol]) > 1:
+                        context['cisd_levels_be'][symbol] = context['cisd_levels_be'][symbol][-1:]
+    
+    # Bearish CISD Formed: Price closes below bullish CISD level
+    if len(context['cisd_levels_be'][symbol]) >= 1:
+        latest_be = context['cisd_levels_be'][symbol][-1]
+        if not latest_be['completed']:
+            if current_close > latest_be['price']:
+                # Price is above level, extend level
+                pass
+            elif current_close <= latest_be['price'] and not latest_be['completed']:
+                # Bearish CISD Formed!
+                latest_be['completed'] = True
                 context['bearish_cisd_formed'][symbol] = True
-                # Store signal with timestamp
+                
+                # Store signal
                 if symbol not in context['cisd_signals']:
                     context['cisd_signals'][symbol] = []
                 context['cisd_signals'][symbol].append({
                     'type': 'bearish',
-                    'time': closed_5m_candle.get('close_time', closed_5m_candle.get('start_time')),
+                    'time': current_time,
                     'price': current_close,
-                    'trigger_level': bullish_leg_open
+                    'trigger_level': latest_be['price'],
+                    'signal': 'Bearish CISD Formed'
                 })
                 # Keep only last 10 signals
                 if len(context['cisd_signals'][symbol]) > 10:
                     context['cisd_signals'][symbol] = context['cisd_signals'][symbol][-10:]
+                
+                # Create new bullish CISD level when bearish completes
+                if pullback['potential_bottom_price'] is not None:
+                    new_level = {
+                        'price': pullback['potential_bottom_price'],
+                        'created_time': current_time,
+                        'completed': False
+                    }
+                    context['cisd_levels_bu'][symbol].append(new_level)
+                    if len(context['cisd_levels_bu'][symbol]) > 1:
+                        context['cisd_levels_bu'][symbol] = context['cisd_levels_bu'][symbol][-1:]
 
 
 def is_within_4h_candle_window(entry_time, session_name):
