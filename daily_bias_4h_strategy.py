@@ -21,8 +21,8 @@ import pytz
 # Timezone for session calculations (EST/EDT)
 EST_TZ = pytz.timezone('US/Eastern')
 
-# Timezone for trading window (Chicago)
-CHICAGO_TZ = pytz.timezone('America/Chicago')
+# Timezone for trading window (Central Timezone)
+CENTRAL_TZ = pytz.timezone('America/Chicago')  # Central Timezone (CST/CDT)
 
 # 4H Session Times (EST)
 SESSION_TIMES = {
@@ -725,7 +725,7 @@ def is_valid_trading_time(entry_time):
     """
     Check if entry_time is within valid trading window.
     
-    Valid trading hours: 7:00 AM to 11:30 AM Chicago time, Monday through Saturday.
+    Valid trading hours: 7:00 AM to 11:30 AM Central timezone, Monday through Saturday.
     
     Returns: True if valid, False otherwise
     """
@@ -734,19 +734,19 @@ def is_valid_trading_time(entry_time):
     if entry_time.tzinfo is None:
         entry_time = entry_time.replace(tzinfo=pytz.UTC)
     
-    # Convert to Chicago timezone
-    chicago_time = entry_time.astimezone(CHICAGO_TZ)
+    # Convert to Central timezone
+    central_time = entry_time.astimezone(CENTRAL_TZ)
     
     # Check day of week: Monday=0, Sunday=6
-    weekday = chicago_time.weekday()
+    weekday = central_time.weekday()
     
     # Only allow Monday through Saturday (0-5), exclude Sunday (6)
     if weekday >= 6:  # Sunday
         return False
     
-    # Check time: 7:00 AM to 11:30 AM Chicago time
-    hour = chicago_time.hour
-    minute = chicago_time.minute
+    # Check time: 7:00 AM to 11:30 AM Central timezone
+    hour = central_time.hour
+    minute = central_time.minute
     
     # Convert to minutes since midnight for easier comparison
     time_minutes = hour * 60 + minute
@@ -760,7 +760,7 @@ def strategy(row, context=None):
     """
     Main strategy function implementing 4H Session Reversal Strategy with candle-by-candle breakdown.
     
-    Trading Window: 7:00 AM to 11:30 AM Chicago time, Monday through Saturday.
+    Trading Window: 7:00 AM to 11:30 AM Central timezone, Monday through Saturday.
     
     Entry Criteria:
     1. CISD (Change in Structure Direction) - Multi-timeframe confirmation:
