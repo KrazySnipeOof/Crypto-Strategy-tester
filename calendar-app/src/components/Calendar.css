@@ -7,11 +7,25 @@
 
 .calendar-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 15px;
   margin-bottom: 20px;
   padding-bottom: 15px;
   border-bottom: 2px solid #f0f0f0;
+}
+
+.nav-group {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+}
+
+.year-navigation {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
 }
 
 .nav-button {
@@ -47,6 +61,39 @@
   font-size: 20px;
   font-weight: 600;
   color: #333;
+  min-width: 180px;
+  text-align: center;
+}
+
+.year-selector {
+  padding: 8px 12px;
+  border: 2px solid #667eea;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 100px;
+  text-align: center;
+}
+
+.year-selector:hover {
+  background: #f5f7ff;
+  border-color: #5568d3;
+}
+
+.year-selector:focus {
+  outline: none;
+  border-color: #5568d3;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.nav-button.year-nav {
+  width: 35px;
+  height: 35px;
+  font-size: 18px;
 }
 
 .calendar-weekdays {

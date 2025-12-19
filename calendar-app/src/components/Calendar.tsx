@@ -45,6 +45,35 @@ function Calendar({ symbolData, onDateSelect, selectedDate }: CalendarProps) {
     )
   }
 
+  const goToPreviousYear = () => {
+    setCurrentMonth(
+      new Date(currentMonth.getFullYear() - 1, currentMonth.getMonth(), 1)
+    )
+  }
+
+  const goToNextYear = () => {
+    setCurrentMonth(
+      new Date(currentMonth.getFullYear() + 1, currentMonth.getMonth(), 1)
+    )
+  }
+
+  const goToYear = (year: number) => {
+    setCurrentMonth(
+      new Date(year, currentMonth.getMonth(), 1)
+    )
+  }
+
+  // Get available years from data range
+  const getAvailableYears = (): number[] => {
+    const years: number[] = []
+    const startYear = startDate.getFullYear()
+    const endYear = endDate.getFullYear()
+    for (let year = startYear; year <= endYear; year++) {
+      years.push(year)
+    }
+    return years
+  }
+
   // Check if navigation buttons should be disabled
   const canGoPrevious = () => {
     const prevMonth = new Date(
@@ -62,6 +91,24 @@ function Calendar({ symbolData, onDateSelect, selectedDate }: CalendarProps) {
       1
     )
     return nextMonth <= new Date(endDate.getFullYear(), endDate.getMonth(), 1)
+  }
+
+  const canGoPreviousYear = () => {
+    const prevYear = new Date(
+      currentMonth.getFullYear() - 1,
+      currentMonth.getMonth(),
+      1
+    )
+    return prevYear >= new Date(startDate.getFullYear(), startDate.getMonth(), 1)
+  }
+
+  const canGoNextYear = () => {
+    const nextYear = new Date(
+      currentMonth.getFullYear() + 1,
+      currentMonth.getMonth(),
+      1
+    )
+    return nextYear <= new Date(endDate.getFullYear(), endDate.getMonth(), 1)
   }
 
   // Get date key for lookup
@@ -172,26 +219,62 @@ function Calendar({ symbolData, onDateSelect, selectedDate }: CalendarProps) {
 
   const weekdays = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
 
+  const availableYears = getAvailableYears()
+
   return (
     <div className="calendar">
       <div className="calendar-header">
-        <button
-          className="nav-button"
-          onClick={goToPreviousMonth}
-          disabled={!canGoPrevious()}
-        >
-          ←
-        </button>
-        <div className="month-year">
-          {monthNames[currentMonth.getMonth()]} {currentMonth.getFullYear()}
+        <div className="nav-group">
+          <button
+            className="nav-button"
+            onClick={goToPreviousMonth}
+            disabled={!canGoPrevious()}
+            title="Previous month"
+          >
+            ←
+          </button>
+          <div className="month-year">
+            {monthNames[currentMonth.getMonth()]} {currentMonth.getFullYear()}
+          </div>
+          <button
+            className="nav-button"
+            onClick={goToNextMonth}
+            disabled={!canGoNext()}
+            title="Next month"
+          >
+            →
+          </button>
         </div>
-        <button
-          className="nav-button"
-          onClick={goToNextMonth}
-          disabled={!canGoNext()}
-        >
-          →
-        </button>
+        <div className="year-navigation">
+          <button
+            className="nav-button year-nav"
+            onClick={goToPreviousYear}
+            disabled={!canGoPreviousYear()}
+            title="Previous year"
+          >
+            «
+          </button>
+          <select
+            className="year-selector"
+            value={currentMonth.getFullYear()}
+            onChange={(e) => goToYear(parseInt(e.target.value))}
+            title="Select year"
+          >
+            {availableYears.map((year) => (
+              <option key={year} value={year}>
+                {year}
+              </option>
+            ))}
+          </select>
+          <button
+            className="nav-button year-nav"
+            onClick={goToNextYear}
+            disabled={!canGoNextYear()}
+            title="Next year"
+          >
+            »
+          </button>
+        </div>
       </div>
 
       <div className="calendar-weekdays">
